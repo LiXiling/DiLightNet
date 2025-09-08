@@ -69,7 +69,7 @@ DiLightNet is a novel method for exerting ***fine-grained lighting control*** du
 We use blender python binding `bpy` for radiance hint rendering. `bpy` requires a minimal version of python 3.10, and for the bpy version (3.6, LTS) we used, the only supported python version is 3.10. Thus, we recommend using `conda` to create a new environment with python 3.10 as well as CUDA and PyTorch dependencies.
 
 ```bash
-conda create --name dilightnet python=3.10 pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia
+conda create --name dilightnet python=3.10 pytorch==2.5.1 torchvision==0.20.1 pytorch-cuda==12.4 mkl==2023.1.0 -c pytorch -c nvidia
 conda activate dilightnet
 git clone https://github.com/iamNCJ/DiLightNet
 cd DiLightNet
