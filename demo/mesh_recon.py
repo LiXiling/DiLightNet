@@ -11,14 +11,19 @@ from dust3r.inference import inference
 from dust3r.image_pairs import make_pairs
 
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-model = AsymmetricCroCo3DStereo.from_pretrained("naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt").to(device).eval()
+model = (
+    AsymmetricCroCo3DStereo.from_pretrained("naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt")
+    .to(device)
+    .eval()
+)
 
 
 import torchvision.transforms as tvf
 import PIL.Image
 import numpy as np
+
 ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 
@@ -26,13 +31,19 @@ def load_single_image(img_array):
     imgs = []
     for i in range(2):
         img = PIL.Image.fromarray(img_array)
-        imgs.append(dict(img=ImgNorm(img)[None], true_shape=np.int32(
-            [img.size[::-1]]), idx=i, instance=str(len(imgs))))
+        imgs.append(
+            dict(
+                img=ImgNorm(img)[None],
+                true_shape=np.int32([img.size[::-1]]),
+                idx=i,
+                instance=str(len(imgs)),
+            )
+        )
 
     return imgs
 
 
-def get_intrinsics(H, W, fov=55.):
+def get_intrinsics(H, W, fov=55.0):
     """
     Intrinsics for a pinhole camera model.
     Assume central principal point.
@@ -40,12 +51,10 @@ def get_intrinsics(H, W, fov=55.):
     f = 0.5 * W / np.tan(0.5 * fov * np.pi / 180.0)
     cx = 0.5 * W
     cy = 0.5 * H
-    return np.array([[f, 0, cx],
-                     [0, f, cy],
-                     [0, 0, 1]])
+    return np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]])
 
 
-def depth_to_points(depth, R=None, t=None, fov=55.):
+def depth_to_points(depth, R=None, t=None, fov=55.0):
     K = get_intrinsics(depth.shape[1], depth.shape[2], fov=fov)
     Kinv = np.linalg.inv(K)
     if R is None:
@@ -94,8 +103,7 @@ def create_triangles(h, w, mask=None):
     bl = (y + 1) * w + x
     br = (y + 1) * w + x + 1
     triangles = np.array([tl, bl, tr, br, tr, bl])
-    triangles = np.transpose(triangles, (1, 2, 0)).reshape(
-        ((w - 1) * (h - 1) * 2, 3))
+    triangles = np.transpose(triangles, (1, 2, 0)).reshape(((w - 1) * (h - 1) * 2, 3))
     if mask is not None:
         mask = mask.reshape(-1)
         triangles = triangles[mask[triangles].all(1)]
@@ -112,39 +120,55 @@ def depth_edges_mask(depth):
     # Compute the x and y gradients of the depth map.
     depth_dx, depth_dy = np.gradient(depth)
     # Compute the gradient magnitude.
-    depth_grad = np.sqrt(depth_dx ** 2 + depth_dy ** 2)
+    depth_grad = np.sqrt(depth_dx**2 + depth_dy**2)
     # Compute the edge mask.
     mask = depth_grad > 0.05
     return mask
 
 
 def mesh_reconstruction(
-        masked_image: np.ndarray,
-        mask: np.ndarray,
-        remove_edges: bool = True,
-        fov: Optional[float] = None,
-        mask_threshold: float = 25.,
+    masked_image: np.ndarray,
+    mask: np.ndarray,
+    remove_edges: bool = True,
+    fov: Optional[float] = None,
+    mask_threshold: float = 25.0,
 ):
     masked_image = cv2.resize(masked_image, (512, 512))
     mask = cv2.resize(mask, (512, 512))
     images = load_single_image(masked_image)
-    pairs = make_pairs(images, scene_graph='complete', prefilter=None, symmetrize=True)
+    pairs = make_pairs(images, scene_graph="complete", prefilter=None, symmetrize=True)
     output = inference(pairs, model, device, batch_size=1)
-    scene = global_aligner(output, device=device, mode=GlobalAlignerMode.PointCloudOptimizer)
+    scene = global_aligner(
+        output, device=device, mode=GlobalAlignerMode.PointCloudOptimizer
+    )
     if fov is not None:
         # do not optimize focal length if fov is provided
-        focal = scene.imshapes[0][1] / (2 * np.tan(0.5 * fov * np.pi / 180.))
+        focal = scene.imshapes[0][1] / (2 * np.tan(0.5 * fov * np.pi / 180.0))
         scene.preset_focal([focal, focal])
-    _loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
+    _loss = scene.compute_global_alignment(
+        init="mst", niter=300, schedule="cosine", lr=0.01
+    )
     if fov is None:
         # get the focal length from the optimized parameters
         focals = scene.get_focals()
-        fov = 2 * (np.arctan((scene.imshapes[0][1] / (focals[0] + focals[1])).detach().cpu().numpy()) * 180 / np.pi)[0]
+        fov = (
+            2
+            * (
+                np.arctan(
+                    (scene.imshapes[0][1] / (focals[0] + focals[1]))
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                * 180
+                / np.pi
+            )[0]
+        )
     depth = scene.get_depthmaps()[0].detach().cpu().numpy()
-    if device.type == 'cuda':
+    if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    rgb = masked_image[..., :3].transpose(2, 0, 1) / 255.
+    rgb = masked_image[..., :3].transpose(2, 0, 1) / 255.0
 
     pts3d = depth_to_points(depth[None], fov=fov)
     pts3d = pts3d.reshape(-1, 3)
@@ -160,7 +184,7 @@ def mesh_reconstruction(
     mesh = trimesh.Trimesh(vertices=verts, faces=triangles, vertex_colors=colors)
 
     # Save as glb tmp file (obj will look inverted in ui)
-    mesh_file = tempfile.NamedTemporaryFile(suffix='.glb', delete=False)
+    mesh_file = tempfile.NamedTemporaryFile(suffix=".glb", delete=False)
     mesh_file_path = mesh_file.name
     mesh.export(mesh_file_path)
     return mesh_file_path, fov
