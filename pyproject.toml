@@ -3,11 +3,25 @@ name = "dilightnet"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
+    "accelerate>=1.13.0",
+    "bpy>=4.4.0",
+    "bpy-helper>=0.0.13",
     "diffusers>=0.37.1",
+    "dust3r @ git+https://github.com/iamNCJ/dust3r.git",
+    #"curope @ git+https://github.com/naver/croco/#subdirectory=models/curope",
+    "imageio>=2.37.3",
     "mkl>=2025.3.1",
+    "onnxruntime-gpu>=1.24.3",
+    "opencv-python>=4.13.0.92",
+    "rembg>=2.0.69",
+    "simple-parsing>=0.1.8",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
     "transformers>=5.4.0",
+    "trimesh>=4.11.5",
 ]
+
+[tool.uv.extra-build-dependencies]
+curope = ["torch"]

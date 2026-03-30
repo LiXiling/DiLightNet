@@ -3,8 +3,7 @@ from typing import Optional, Tuple, Union
 import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
-from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.controlnet import ControlNetModel, zero_module
+from diffusers.models.controlnets.controlnet import ControlNetModel, zero_module
 from diffusers.models.embeddings import (
     TextImageProjection,
     TextImageTimeEmbedding,
@@ -12,6 +11,7 @@ from diffusers.models.embeddings import (
     TimestepEmbedding,
     Timesteps,
 )
+from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.unets.unet_2d_blocks import (
     CrossAttnDownBlock2D,
     DownBlock2D,
@@ -48,33 +48,27 @@ class NeuralTextureEncoder(nn.Module):
         self.model = nn.Sequential(
             nn.Conv2d(in_dim, dims[0], kernel_size=3, padding=1),
             nn.SiLU(inplace=True),
-
             # down 1
             nn.Conv2d(dims[0], dims[1], kernel_size=3, padding=1, stride=2),
             nn.GroupNorm(num_groups=groups, num_channels=dims[1]),
             nn.SiLU(inplace=True),
-
             # down 2
             nn.Conv2d(dims[1], dims[2], kernel_size=3, padding=1, stride=2),
             nn.GroupNorm(num_groups=groups, num_channels=dims[2]),
             nn.SiLU(inplace=True),
-
             # res blocks
             ResBlock(dims[2]),
             ResBlock(dims[2]),
             ResBlock(dims[2]),
             ResBlock(dims[2]),
-
             # up 1
             nn.ConvTranspose2d(dims[2], dims[1], kernel_size=4, padding=1, stride=2),
             nn.GroupNorm(num_groups=groups, num_channels=dims[1]),
             nn.SiLU(inplace=True),
-
             # up 2
             nn.ConvTranspose2d(dims[1], dims[0], kernel_size=4, padding=1, stride=2),
             nn.GroupNorm(num_groups=groups, num_channels=dims[0]),
             nn.SiLU(inplace=True),
-
             # out
             nn.Conv2d(dims[0], out_dim, kernel_size=3, padding=1),
         )
@@ -90,33 +84,41 @@ class NeuralTextureEncoder(nn.Module):
 
 class NeuralTextureEmbedding(nn.Module):
     def __init__(
-            self,
-            conditioning_embedding_channels: int,
-            conditioning_channels: int = 3,
-            block_out_channels: Tuple[int] = (16, 32, 96, 256),
-            shading_hint_channels: int = 12,  # diffuse + 3 * ggx
+        self,
+        conditioning_embedding_channels: int,
+        conditioning_channels: int = 3,
+        block_out_channels: Tuple[int] = (16, 32, 96, 256),
+        shading_hint_channels: int = 12,  # diffuse + 3 * ggx
     ):
         super().__init__()
         self.conditioning_channels = conditioning_channels
         self.shading_hint_channels = shading_hint_channels
 
-        self.conv_in = nn.Conv2d(shading_hint_channels, block_out_channels[0], kernel_size=3, padding=1)
-        self.neural_texture_encoder = NeuralTextureEncoder(in_dim=conditioning_channels, out_dim=shading_hint_channels)
+        self.conv_in = nn.Conv2d(
+            shading_hint_channels, block_out_channels[0], kernel_size=3, padding=1
+        )
+        self.neural_texture_encoder = NeuralTextureEncoder(
+            in_dim=conditioning_channels, out_dim=shading_hint_channels
+        )
 
         self.blocks = nn.ModuleList([])
 
         for i in range(len(block_out_channels) - 1):
             channel_in = block_out_channels[i]
             channel_out = block_out_channels[i + 1]
-            self.blocks.append(nn.Conv2d(channel_in, channel_in, kernel_size=3, padding=1))
-            self.blocks.append(nn.Conv2d(channel_in, channel_out, kernel_size=3, padding=1, stride=2))
+            self.blocks.append(
+                nn.Conv2d(channel_in, channel_in, kernel_size=3, padding=1)
+            )
+            self.blocks.append(
+                nn.Conv2d(channel_in, channel_out, kernel_size=3, padding=1, stride=2)
+            )
 
         self.conv_out = zero_module(
             nn.Conv2d(
                 block_out_channels[-1],
                 conditioning_embedding_channels,
                 kernel_size=3,
-                padding=1
+                padding=1,
             )
         )
 
@@ -125,7 +127,7 @@ class NeuralTextureEmbedding(nn.Module):
         conditioning, shading_hint = torch.split(
             all_conditioning,
             [self.conditioning_channels, self.shading_hint_channels],
-            dim=1
+            dim=1,
         )
         embedding = self.neural_texture_encoder(conditioning)  # [BS, 15, 512, 512]
 
@@ -155,45 +157,50 @@ class NeuralTextureControlNetModel(ControlNetModel):
 
     @register_to_config
     def __init__(
-            self,
-            in_channels: int = 4,
-            conditioning_channels: int = 3,
-            flip_sin_to_cos: bool = True,
-            freq_shift: int = 0,
-            down_block_types: Tuple[str, ...] = (
-                    "CrossAttnDownBlock2D",
-                    "CrossAttnDownBlock2D",
-                    "CrossAttnDownBlock2D",
-                    "DownBlock2D",
-            ),
-            mid_block_type: Optional[str] = "UNetMidBlock2DCrossAttn",
-            only_cross_attention: Union[bool, Tuple[bool]] = False,
-            block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
-            layers_per_block: int = 2,
-            downsample_padding: int = 1,
-            mid_block_scale_factor: float = 1,
-            act_fn: str = "silu",
-            norm_num_groups: Optional[int] = 32,
-            norm_eps: float = 1e-5,
-            cross_attention_dim: int = 1280,
-            transformer_layers_per_block: Union[int, Tuple[int, ...]] = 1,
-            encoder_hid_dim: Optional[int] = None,
-            encoder_hid_dim_type: Optional[str] = None,
-            attention_head_dim: Union[int, Tuple[int, ...]] = 8,
-            num_attention_heads: Optional[Union[int, Tuple[int, ...]]] = None,
-            use_linear_projection: bool = False,
-            class_embed_type: Optional[str] = None,
-            addition_embed_type: Optional[str] = None,
-            addition_time_embed_dim: Optional[int] = None,
-            num_class_embeds: Optional[int] = None,
-            upcast_attention: bool = False,
-            resnet_time_scale_shift: str = "default",
-            projection_class_embeddings_input_dim: Optional[int] = None,
-            controlnet_conditioning_channel_order: str = "rgb",
-            conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (16, 32, 96, 256),
-            global_pool_conditions: bool = False,
-            addition_embed_type_num_heads: int = 64,
-            shading_hint_channels: int = 12,
+        self,
+        in_channels: int = 4,
+        conditioning_channels: int = 3,
+        flip_sin_to_cos: bool = True,
+        freq_shift: int = 0,
+        down_block_types: Tuple[str, ...] = (
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+            "DownBlock2D",
+        ),
+        mid_block_type: Optional[str] = "UNetMidBlock2DCrossAttn",
+        only_cross_attention: Union[bool, Tuple[bool]] = False,
+        block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
+        layers_per_block: int = 2,
+        downsample_padding: int = 1,
+        mid_block_scale_factor: float = 1,
+        act_fn: str = "silu",
+        norm_num_groups: Optional[int] = 32,
+        norm_eps: float = 1e-5,
+        cross_attention_dim: int = 1280,
+        transformer_layers_per_block: Union[int, Tuple[int, ...]] = 1,
+        encoder_hid_dim: Optional[int] = None,
+        encoder_hid_dim_type: Optional[str] = None,
+        attention_head_dim: Union[int, Tuple[int, ...]] = 8,
+        num_attention_heads: Optional[Union[int, Tuple[int, ...]]] = None,
+        use_linear_projection: bool = False,
+        class_embed_type: Optional[str] = None,
+        addition_embed_type: Optional[str] = None,
+        addition_time_embed_dim: Optional[int] = None,
+        num_class_embeds: Optional[int] = None,
+        upcast_attention: bool = False,
+        resnet_time_scale_shift: str = "default",
+        projection_class_embeddings_input_dim: Optional[int] = None,
+        controlnet_conditioning_channel_order: str = "rgb",
+        conditioning_embedding_out_channels: Optional[Tuple[int, ...]] = (
+            16,
+            32,
+            96,
+            256,
+        ),
+        global_pool_conditions: bool = False,
+        addition_embed_type_num_heads: int = 64,
+        shading_hint_channels: int = 12,
     ):
         # avoid running __init__() of the original ControlNetModel
         super(ModelMixin, self).__init__()
@@ -202,8 +209,12 @@ class NeuralTextureControlNetModel(ControlNetModel):
 
         num_attention_heads = num_attention_heads or attention_head_dim
 
-        assert controlnet_conditioning_channel_order == "rgb", "Only RGB channel order is supported."
-        assert global_pool_conditions is False, "Global pooling conditions is not supported."
+        assert controlnet_conditioning_channel_order == "rgb", (
+            "Only RGB channel order is supported."
+        )
+        assert global_pool_conditions is False, (
+            "Global pooling conditions is not supported."
+        )
 
         # Check inputs
         if len(block_out_channels) != len(down_block_types):
@@ -211,24 +222,33 @@ class NeuralTextureControlNetModel(ControlNetModel):
                 f"Must provide the same number of `block_out_channels` as `down_block_types`. `block_out_channels`: {block_out_channels}. `down_block_types`: {down_block_types}."
             )
 
-        if not isinstance(only_cross_attention, bool) and len(only_cross_attention) != len(down_block_types):
+        if not isinstance(only_cross_attention, bool) and len(
+            only_cross_attention
+        ) != len(down_block_types):
             raise ValueError(
                 f"Must provide the same number of `only_cross_attention` as `down_block_types`. `only_cross_attention`: {only_cross_attention}. `down_block_types`: {down_block_types}."
             )
 
-        if not isinstance(num_attention_heads, int) and len(num_attention_heads) != len(down_block_types):
+        if not isinstance(num_attention_heads, int) and len(num_attention_heads) != len(
+            down_block_types
+        ):
             raise ValueError(
                 f"Must provide the same number of `num_attention_heads` as `down_block_types`. `num_attention_heads`: {num_attention_heads}. `down_block_types`: {down_block_types}."
             )
 
         if isinstance(transformer_layers_per_block, int):
-            transformer_layers_per_block = [transformer_layers_per_block] * len(down_block_types)
+            transformer_layers_per_block = [transformer_layers_per_block] * len(
+                down_block_types
+            )
 
         # input
         conv_in_kernel = 3
         conv_in_padding = (conv_in_kernel - 1) // 2
         self.conv_in = nn.Conv2d(
-            in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding
+            in_channels,
+            block_out_channels[0],
+            kernel_size=conv_in_kernel,
+            padding=conv_in_padding,
         )
 
         # time
@@ -244,7 +264,9 @@ class NeuralTextureControlNetModel(ControlNetModel):
         if encoder_hid_dim_type is None and encoder_hid_dim is not None:
             encoder_hid_dim_type = "text_proj"
             self.register_to_config(encoder_hid_dim_type=encoder_hid_dim_type)
-            logger.info("encoder_hid_dim_type defaults to 'text_proj' as `encoder_hid_dim` is defined.")
+            logger.info(
+                "encoder_hid_dim_type defaults to 'text_proj' as `encoder_hid_dim` is defined."
+            )
 
         if encoder_hid_dim is None and encoder_hid_dim_type is not None:
             raise ValueError(
@@ -282,7 +304,9 @@ class NeuralTextureControlNetModel(ControlNetModel):
                 raise ValueError(
                     "`class_embed_type`: 'projection' requires `projection_class_embeddings_input_dim` be set"
                 )
-            self.class_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
+            self.class_embedding = TimestepEmbedding(
+                projection_class_embeddings_input_dim, time_embed_dim
+            )
         else:
             self.class_embedding = None
 
@@ -293,18 +317,28 @@ class NeuralTextureControlNetModel(ControlNetModel):
                 text_time_embedding_from_dim = cross_attention_dim
 
             self.add_embedding = TextTimeEmbedding(
-                text_time_embedding_from_dim, time_embed_dim, num_heads=addition_embed_type_num_heads
+                text_time_embedding_from_dim,
+                time_embed_dim,
+                num_heads=addition_embed_type_num_heads,
             )
         elif addition_embed_type == "text_image":
             self.add_embedding = TextImageTimeEmbedding(
-                text_embed_dim=cross_attention_dim, image_embed_dim=cross_attention_dim, time_embed_dim=time_embed_dim
+                text_embed_dim=cross_attention_dim,
+                image_embed_dim=cross_attention_dim,
+                time_embed_dim=time_embed_dim,
             )
         elif addition_embed_type == "text_time":
-            self.add_time_proj = Timesteps(addition_time_embed_dim, flip_sin_to_cos, freq_shift)
-            self.add_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
+            self.add_time_proj = Timesteps(
+                addition_time_embed_dim, flip_sin_to_cos, freq_shift
+            )
+            self.add_embedding = TimestepEmbedding(
+                projection_class_embeddings_input_dim, time_embed_dim
+            )
 
         elif addition_embed_type is not None:
-            raise ValueError(f"addition_embed_type: {addition_embed_type} must be None, 'text' or 'text_image'.")
+            raise ValueError(
+                f"addition_embed_type: {addition_embed_type} must be None, 'text' or 'text_image'."
+            )
 
         # control net conditioning embedding
         self.controlnet_cond_embedding = NeuralTextureEmbedding(
@@ -351,7 +385,9 @@ class NeuralTextureControlNetModel(ControlNetModel):
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
                 num_attention_heads=num_attention_heads[i],
-                attention_head_dim=attention_head_dim[i] if attention_head_dim[i] is not None else output_channel,
+                attention_head_dim=attention_head_dim[i]
+                if attention_head_dim[i] is not None
+                else output_channel,
                 downsample_padding=downsample_padding,
                 use_linear_projection=use_linear_projection,
                 only_cross_attention=only_cross_attention[i],
@@ -361,19 +397,25 @@ class NeuralTextureControlNetModel(ControlNetModel):
             self.down_blocks.append(down_block)
 
             for _ in range(layers_per_block):
-                controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
+                controlnet_block = nn.Conv2d(
+                    output_channel, output_channel, kernel_size=1
+                )
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
 
             if not is_final_block:
-                controlnet_block = nn.Conv2d(output_channel, output_channel, kernel_size=1)
+                controlnet_block = nn.Conv2d(
+                    output_channel, output_channel, kernel_size=1
+                )
                 controlnet_block = zero_module(controlnet_block)
                 self.controlnet_down_blocks.append(controlnet_block)
 
         # mid
         mid_block_channel = block_out_channels[-1]
 
-        controlnet_block = nn.Conv2d(mid_block_channel, mid_block_channel, kernel_size=1)
+        controlnet_block = nn.Conv2d(
+            mid_block_channel, mid_block_channel, kernel_size=1
+        )
         controlnet_block = zero_module(controlnet_block)
         self.controlnet_mid_block = controlnet_block
 
@@ -409,13 +451,13 @@ class NeuralTextureControlNetModel(ControlNetModel):
 
     @classmethod
     def from_unet(
-            cls,
-            unet: UNet2DConditionModel,
-            controlnet_conditioning_channel_order: str = "rgb",
-            conditioning_embedding_out_channels: Optional[Tuple[int]] = (16, 32, 96, 256),
-            load_weights_from_unet: bool = True,
-            shading_hint_channels: int = 12,
-            conditioning_channels: int = 4,
+        cls,
+        unet: UNet2DConditionModel,
+        controlnet_conditioning_channel_order: str = "rgb",
+        conditioning_embedding_out_channels: Optional[Tuple[int]] = (16, 32, 96, 256),
+        load_weights_from_unet: bool = True,
+        shading_hint_channels: int = 12,
+        conditioning_channels: int = 4,
     ):
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
@@ -426,13 +468,27 @@ class NeuralTextureControlNetModel(ControlNetModel):
                 where applicable.
         """
         transformer_layers_per_block = (
-            unet.config.transformer_layers_per_block if "transformer_layers_per_block" in unet.config else 1
+            unet.config.transformer_layers_per_block
+            if "transformer_layers_per_block" in unet.config
+            else 1
         )
-        encoder_hid_dim = unet.config.encoder_hid_dim if "encoder_hid_dim" in unet.config else None
-        encoder_hid_dim_type = unet.config.encoder_hid_dim_type if "encoder_hid_dim_type" in unet.config else None
-        addition_embed_type = unet.config.addition_embed_type if "addition_embed_type" in unet.config else None
+        encoder_hid_dim = (
+            unet.config.encoder_hid_dim if "encoder_hid_dim" in unet.config else None
+        )
+        encoder_hid_dim_type = (
+            unet.config.encoder_hid_dim_type
+            if "encoder_hid_dim_type" in unet.config
+            else None
+        )
+        addition_embed_type = (
+            unet.config.addition_embed_type
+            if "addition_embed_type" in unet.config
+            else None
+        )
         addition_time_embed_dim = (
-            unet.config.addition_time_embed_dim if "addition_time_embed_dim" in unet.config else None
+            unet.config.addition_time_embed_dim
+            if "addition_time_embed_dim" in unet.config
+            else None
         )
 
         controlnet = cls(
@@ -474,7 +530,9 @@ class NeuralTextureControlNetModel(ControlNetModel):
             controlnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
 
             if controlnet.class_embedding:
-                controlnet.class_embedding.load_state_dict(unet.class_embedding.state_dict())
+                controlnet.class_embedding.load_state_dict(
+                    unet.class_embedding.state_dict()
+                )
 
             controlnet.down_blocks.load_state_dict(unet.down_blocks.state_dict())
             controlnet.mid_block.load_state_dict(unet.mid_block.state_dict())
@@ -482,5 +540,7 @@ class NeuralTextureControlNetModel(ControlNetModel):
         return controlnet
 
     def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, (CrossAttnDownBlock2D, DownBlock2D, NeuralTextureEncoder)):
+        if isinstance(
+            module, (CrossAttnDownBlock2D, DownBlock2D, NeuralTextureEncoder)
+        ):
             module.gradient_checkpointing = value
