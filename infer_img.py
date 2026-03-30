@@ -175,4 +175,4 @@ if __name__ == "__main__":
         out_vid = args.out_vid or args.prov_img
         out_vid = f"{os.path.splitext(out_vid)[0]}_{idx}.mp4"
         os.makedirs(os.path.dirname(out_vid) or ".", exist_ok=True)
-        imageio.v3.imwrite(out_vid, all_res, fps=24, quality=9, plugin="pyav")
+        imageio.v3.imwrite(out_vid, all_res, fps=24, codec="libx264", plugin="pyav")
